@@ -87,3 +87,4 @@ npm run lint
 3. Estado de resultados mensual.
 4. Facturas de comisión y envíos, IVA crédito y percepciones.
 5. Base de datos y múltiples usuarios.
+Deployment inicial de FidiTools.
