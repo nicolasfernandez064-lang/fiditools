@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Menu,
   PackageSearch,
+  ShoppingCart,
   Sparkles,
   X
 } from "lucide-react";
@@ -20,6 +21,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/calculadora", label: "Calculadora", icon: Calculator },
   { href: "/publicaciones", label: "Publicaciones", icon: PackageSearch },
+  { href: "/ventas", label: "Ventas", icon: ShoppingCart },
   { href: "/reportes", label: "Reportes", icon: FileText }
 ];
 
