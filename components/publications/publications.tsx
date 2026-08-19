@@ -30,9 +30,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  currentCostArs,
   readPublicationCosts,
+  readUsdRate,
   removePublicationCost,
   writePublicationCost,
+  writeUsdRate,
   type PublicationCostMap,
   type PublicationCostRecord
 } from "@/lib/publication-costs";
@@ -74,6 +77,8 @@ export function Publications() {
   const [costFilter, setCostFilter] = useState<CostFilter>("all");
   const [state, setState] = useState<LoadState>({ status: "loading", data: null, error: "" });
   const [costs, setCosts] = useState<PublicationCostMap>({});
+  const [usdRate, setUsdRate] = useState(0);
+  const [usdRateDraft, setUsdRateDraft] = useState("");
   const [selected, setSelected] = useState<MeliPublication | null>(null);
 
   const load = useCallback(async () => {
@@ -102,6 +107,9 @@ export function Publications() {
       }
 
       setCosts(readPublicationCosts(payload.sellerId));
+      const storedUsdRate = readUsdRate(payload.sellerId);
+      setUsdRate(storedUsdRate);
+      setUsdRateDraft(storedUsdRate ? String(storedUsdRate) : "");
       setState({ status: "connected", data: payload, error: "" });
     } catch (error) {
       setState({
@@ -124,7 +132,7 @@ export function Publications() {
 
     return publications.filter((publication) => {
       const cost = costs[publication.id];
-      const hasCost = Number(cost?.cost || 0) > 0;
+      const hasCost = currentCostArs(cost, usdRate) > 0;
       const matchesCost = costFilter === "all" || (costFilter === "with" ? hasCost : !hasCost);
       if (!matchesCost) return false;
       if (!normalizedQuery) return true;
@@ -134,19 +142,19 @@ export function Publications() {
         .toLocaleLowerCase("es")
         .includes(normalizedQuery);
     });
-  }, [costFilter, costs, publications, query]);
+  }, [costFilter, costs, publications, query, usdRate]);
 
   const visibleSummary = useMemo(() => {
     return publications.reduce(
       (acc, publication) => {
         acc.stock += publication.availableQuantity;
         acc.sold += publication.soldQuantity;
-        if (!costs[publication.id]?.cost) acc.withoutCost += 1;
+        if (currentCostArs(costs[publication.id], usdRate) <= 0) acc.withoutCost += 1;
         return acc;
       },
       { stock: 0, sold: 0, withoutCost: 0 }
     );
-  }, [costs, publications]);
+  }, [costs, publications, usdRate]);
 
   const paging = state.status === "connected" ? state.data.paging : { total: 0, offset, limit };
   const page = Math.floor(paging.offset / paging.limit) + 1;
@@ -173,11 +181,22 @@ export function Publications() {
     setOffset(0);
   }
 
+  function saveUsdRate() {
+    if (!sellerId) return;
+    const parsed = parseArgentineNumber(usdRateDraft);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    const saved = writeUsdRate(sellerId, parsed);
+    if (saved) {
+      setUsdRate(saved);
+      setUsdRateDraft(String(saved));
+    }
+  }
+
   function exportVisibleCsv() {
     if (!filtered.length) return;
 
     const rows = [
-      ["ID", "Producto", "SKU", "Estado", "Precio", "Stock", "Vendidos", "Costo", "IVA NR", "Proveedor", "Margen antes de ML"],
+      ["ID", "Producto", "SKU", "Estado", "Precio", "Stock", "Vendidos", "Costo USD", "USD/ARS", "Costo ARS", "IVA NR", "Proveedor", "Margen antes de ML"],
       ...filtered.map((publication) => {
         const cost = costs[publication.id];
         return [
@@ -188,10 +207,12 @@ export function Publications() {
           publication.price,
           publication.availableQuantity,
           publication.soldQuantity,
-          cost?.cost || 0,
+          cost?.costUsd || 0,
+          usdRate || cost?.exchangeRate || 0,
+          currentCostArs(cost, usdRate),
           cost?.ivaNonRecoverable || 0,
           cost?.supplier || "",
-          marginBeforeMeli(publication.price, cost)
+          marginBeforeMeli(publication.price, cost, usdRate)
         ];
       })
     ];
@@ -241,6 +262,13 @@ export function Publications() {
               </div>
             </div>
           </div>
+
+          <UsdRatePanel
+            value={usdRateDraft}
+            activeRate={usdRate}
+            onChange={setUsdRateDraft}
+            onSave={saveUsdRate}
+          />
 
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <SummaryCard
@@ -325,7 +353,7 @@ export function Publications() {
                 <EmptyState hasPublications={publications.length > 0} />
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1120px] text-left text-sm">
+                  <table className="w-full min-w-[1280px] text-left text-sm">
                     <thead>
                       <tr className="border-b border-white/[0.08] text-[11px] uppercase tracking-[0.12em] text-slate-600">
                         <th className="px-5 py-4 sm:px-6">Producto</th>
@@ -333,7 +361,8 @@ export function Publications() {
                         <th className="px-4 py-4 text-right">Precio</th>
                         <th className="px-4 py-4 text-right">Stock</th>
                         <th className="px-4 py-4 text-right">Vendidos</th>
-                        <th className="px-4 py-4 text-right">Costo</th>
+                        <th className="px-4 py-4 text-right">Costo USD</th>
+                        <th className="px-4 py-4 text-right">Costo ARS</th>
                         <th className="px-4 py-4 text-right">Margen antes de ML</th>
                         <th className="px-5 py-4 text-right sm:px-6">Acción</th>
                       </tr>
@@ -344,6 +373,9 @@ export function Publications() {
                           key={publication.id}
                           publication={publication}
                           cost={costs[publication.id]}
+                          sellerId={sellerId}
+                          usdRate={usdRate}
+                          onCostSave={(record) => updateCost(record, publication.id)}
                           onEdit={() => setSelected(publication)}
                         />
                       ))}
@@ -385,6 +417,7 @@ export function Publications() {
           publication={selected}
           sellerId={sellerId}
           current={costs[selected.id]}
+          usdRate={usdRate}
           onClose={() => setSelected(null)}
           onSave={(record) => {
             updateCost(record, selected.id);
@@ -401,17 +434,142 @@ export function Publications() {
   );
 }
 
+function UsdRatePanel({
+  value,
+  activeRate,
+  onChange,
+  onSave
+}: {
+  value: string;
+  activeRate: number;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <Card className="mb-5 overflow-hidden border-cyan-400/[0.14]">
+      <CardContent className="p-0 sm:p-0">
+        <div className="flex flex-col gap-4 bg-gradient-to-r from-cyan-500/[0.08] via-blue-500/[0.06] to-violet-500/[0.08] p-5 lg:flex-row lg:items-center lg:justify-between sm:p-6">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-cyan-300">Cotización global</p>
+            <h3 className="mt-1 text-lg font-black text-white">USD → ARS</h3>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">
+              Cambiá este valor una sola vez y FidiTools pesifica automáticamente todos los costos cargados en USD.
+            </p>
+          </div>
+          <div className="flex w-full max-w-md items-end gap-2">
+            <Field label="Valor del USD">
+              <Input
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onSave();
+                }}
+                inputMode="decimal"
+                placeholder="Ej.: 1570"
+              />
+            </Field>
+            <Button onClick={onSave} className="mb-0 h-11 shrink-0"><Save /> Aplicar</Button>
+          </div>
+        </div>
+        {activeRate ? (
+          <div className="border-t border-white/[0.06] px-5 py-3 text-xs text-slate-500 sm:px-6">
+            Cotización activa: <strong className="text-cyan-200">$ {integer.format(activeRate)} por USD</strong>. Los costos ARS y márgenes de toda la tabla usan este valor.
+          </div>
+        ) : (
+          <div className="border-t border-amber-400/[0.10] bg-amber-500/[0.04] px-5 py-3 text-xs text-amber-200 sm:px-6">
+            Cargá una cotización para empezar a ingresar costos en USD.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function QuickUsdCost({
+  publication,
+  sellerId,
+  usdRate,
+  current,
+  onSave
+}: {
+  publication: MeliPublication;
+  sellerId: number;
+  usdRate: number;
+  current?: PublicationCostRecord;
+  onSave: (record: PublicationCostRecord) => void;
+}) {
+  const [value, setValue] = useState(current?.costUsd ? String(current.costUsd) : "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setValue(current?.costUsd ? String(current.costUsd) : "");
+  }, [current?.costUsd]);
+
+  function save() {
+    const parsed = parseArgentineNumber(value);
+    if (!usdRate || !Number.isFinite(parsed) || parsed <= 0) return;
+    if (Number(current?.costUsd || 0) === parsed) return;
+
+    setSaving(true);
+    const saved = writePublicationCost(
+      sellerId,
+      {
+        itemId: publication.id,
+        costUsd: parsed,
+        exchangeRate: usdRate,
+        supplier: current?.supplier || "",
+        ivaNonRecoverable: Number(current?.ivaNonRecoverable || 0),
+        notes: current?.notes || ""
+      },
+      current
+    );
+    if (saved) onSave(saved);
+    setSaving(false);
+  }
+
+  return (
+    <div className="ml-auto w-[116px]">
+      <div className="relative">
+        <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-600">USD</span>
+        <input
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onBlur={save}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.currentTarget.blur();
+            }
+          }}
+          disabled={!usdRate || saving}
+          inputMode="decimal"
+          placeholder={usdRate ? "0" : "USD?"}
+          className="h-9 w-full rounded-lg border border-white/[0.10] bg-slate-950/[0.65] pl-9 pr-2 text-right text-xs font-bold text-slate-100 outline-none transition placeholder:text-slate-700 focus:border-cyan-400/[0.55] focus:ring-2 focus:ring-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-45"
+          title={!usdRate ? "Primero cargá la cotización USD/ARS" : "Editá y presioná Enter o hacé clic afuera para guardar"}
+        />
+      </div>
+      {current?.costUsd ? <span className="mt-1 block text-[10px] text-slate-700">Enter para guardar</span> : null}
+    </div>
+  );
+}
+
 function PublicationRow({
   publication,
   cost,
+  sellerId,
+  usdRate,
+  onCostSave,
   onEdit
 }: {
   publication: MeliPublication;
   cost?: PublicationCostRecord;
+  sellerId: number;
+  usdRate: number;
+  onCostSave: (record: PublicationCostRecord) => void;
   onEdit: () => void;
 }) {
-  const margin = marginBeforeMeli(publication.price, cost);
-  const hasCost = Number(cost?.cost || 0) > 0;
+  const costArs = currentCostArs(cost, usdRate);
+  const margin = marginBeforeMeli(publication.price, cost, usdRate);
+  const hasCost = costArs > 0;
 
   return (
     <tr className="border-b border-white/[0.06] text-slate-300 last:border-0 hover:bg-white/[0.025]">
@@ -444,13 +602,22 @@ function PublicationRow({
       </td>
       <td className="px-4 py-4 text-right text-slate-400">{integer.format(publication.soldQuantity)}</td>
       <td className="px-4 py-4 text-right">
-        {cost ? (
+        <QuickUsdCost
+          publication={publication}
+          sellerId={sellerId}
+          usdRate={usdRate}
+          current={cost}
+          onSave={onCostSave}
+        />
+      </td>
+      <td className="px-4 py-4 text-right">
+        {hasCost ? (
           <div>
-            <span className="font-bold text-slate-100">{money.format(cost.cost)}</span>
-            {cost.ivaNonRecoverable ? <small className="mt-1 block text-[10px] text-slate-600">+ {money.format(cost.ivaNonRecoverable)} IVA NR</small> : null}
+            <span className="font-bold text-slate-100">{money.format(costArs)}</span>
+            {cost?.ivaNonRecoverable ? <small className="mt-1 block text-[10px] text-slate-600">+ {money.format(cost.ivaNonRecoverable)} IVA NR</small> : null}
           </div>
         ) : (
-          <Badge className="border-amber-400/[0.15] bg-amber-500/[0.08] text-amber-200">Sin costo</Badge>
+          <span className="text-slate-700">—</span>
         )}
       </td>
       <td className="px-4 py-4 text-right">
@@ -484,6 +651,7 @@ function CostEditor({
   publication,
   sellerId,
   current,
+  usdRate,
   onClose,
   onSave,
   onDelete
@@ -491,25 +659,31 @@ function CostEditor({
   publication: MeliPublication;
   sellerId: number;
   current?: PublicationCostRecord;
+  usdRate: number;
   onClose: () => void;
   onSave: (record: PublicationCostRecord) => void;
   onDelete: () => void;
 }) {
-  const [cost, setCost] = useState(current?.cost ? String(current.cost) : "");
+  const [costUsd, setCostUsd] = useState(current?.costUsd ? String(current.costUsd) : "");
   const [supplier, setSupplier] = useState(current?.supplier || "");
   const [ivaNonRecoverable, setIvaNonRecoverable] = useState(current?.ivaNonRecoverable ? String(current.ivaNonRecoverable) : "");
   const [notes, setNotes] = useState(current?.notes || "");
   const [error, setError] = useState("");
 
-  const parsedCost = parseArgentineNumber(cost);
+  const parsedCostUsd = parseArgentineNumber(costUsd);
+  const parsedCost = parsedCostUsd > 0 && usdRate > 0 ? parsedCostUsd * usdRate : 0;
   const parsedIva = parseArgentineNumber(ivaNonRecoverable);
   const previewMargin = publication.price > 0 && parsedCost > 0
     ? ((publication.price - parsedCost - parsedIva) / publication.price) * 100
     : null;
 
   function submit() {
-    if (!Number.isFinite(parsedCost) || parsedCost <= 0) {
-      setError("Ingresá un costo mayor a cero.");
+    if (!usdRate) {
+      setError("Primero cargá la cotización USD/ARS en la parte superior de Publicaciones.");
+      return;
+    }
+    if (!Number.isFinite(parsedCostUsd) || parsedCostUsd <= 0) {
+      setError("Ingresá un costo en USD mayor a cero.");
       return;
     }
     if (!Number.isFinite(parsedIva) || parsedIva < 0) {
@@ -521,7 +695,8 @@ function CostEditor({
       sellerId,
       {
         itemId: publication.id,
-        cost: parsedCost,
+        costUsd: parsedCostUsd,
+        exchangeRate: usdRate,
         supplier,
         ivaNonRecoverable: parsedIva,
         notes
@@ -565,8 +740,9 @@ function CostEditor({
               <CardDescription>Mercado Libre no conoce estos datos. FidiTools los asocia a la publicación.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Field label="Costo del producto" required>
-                <Input value={cost} onChange={(event) => setCost(event.target.value)} inputMode="decimal" placeholder="Ej.: 228750" />
+              <Field label="Costo del producto (USD)" required>
+                <Input value={costUsd} onChange={(event) => setCostUsd(event.target.value)} inputMode="decimal" placeholder="Ej.: 161" />
+                <p className="mt-2 text-xs text-slate-600">Cotización actual: {usdRate ? money.format(usdRate).replace("ARS", "").trim() : "sin cargar"} por USD · Costo pesificado: {parsedCost > 0 ? money.format(parsedCost) : "—"}</p>
               </Field>
 
               <Field label="Proveedor">
@@ -618,7 +794,8 @@ function CostEditor({
                 {current.history.slice(0, 5).map((entry, index) => (
                   <div key={`${entry.changedAt}-${index}`} className="flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.025] p-3">
                     <div>
-                      <strong className="text-sm text-slate-200">{money.format(entry.cost)}</strong>
+                      <strong className="text-sm text-slate-200">{entry.costUsd ? `USD ${formatUsd(entry.costUsd)}` : money.format(entry.cost)}</strong>
+                      {entry.costUsd ? <p className="mt-1 text-xs text-slate-500">{money.format(entry.cost)}</p> : null}
                       {entry.ivaNonRecoverable ? <p className="mt-1 text-xs text-slate-600">IVA NR {money.format(entry.ivaNonRecoverable)}</p> : null}
                     </div>
                     <time className="text-xs text-slate-600">{safeDate(entry.changedAt)}</time>
@@ -788,9 +965,14 @@ function StatusDot({ status }: { status: string }) {
   return <span className={`size-1.5 rounded-full ${className}`} />;
 }
 
-function marginBeforeMeli(price: number, cost?: PublicationCostRecord) {
-  if (!price || !cost?.cost) return 0;
-  return ((price - Number(cost.cost) - Number(cost.ivaNonRecoverable || 0)) / price) * 100;
+function marginBeforeMeli(price: number, cost: PublicationCostRecord | undefined, usdRate: number) {
+  const ars = currentCostArs(cost, usdRate);
+  if (!price || !ars) return 0;
+  return ((price - ars - Number(cost?.ivaNonRecoverable || 0)) / price) * 100;
+}
+
+function formatUsd(value: number) {
+  return new Intl.NumberFormat("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value);
 }
 
 function formatPercent(value: number) {
