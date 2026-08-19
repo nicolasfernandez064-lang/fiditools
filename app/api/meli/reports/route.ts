@@ -21,6 +21,7 @@ type CostRow = {
   current_cost_ars: number;
   current_cost_usd: number;
   current_usd_rate: number;
+  iva_nr: number;
   updated_at: string;
 };
 
@@ -39,6 +40,7 @@ type ProductAggregate = {
   sales: number;
   fees: number;
   cost: number;
+  ivaNonRecoverable: number;
   shipping: number;
   iibb: number;
   vatDebit: number;
@@ -180,7 +182,7 @@ export async function GET(request: NextRequest) {
 
     const products = (await sql`
       SELECT id, meli_item_id, title, current_cost_ars, current_cost_usd,
-             current_usd_rate, updated_at
+             current_usd_rate, iva_nr, updated_at
       FROM products
       WHERE seller_id = ${sellerId}
     `) as unknown as CostRow[];
@@ -208,6 +210,7 @@ export async function GET(request: NextRequest) {
     let coveredSales = 0;
     let coveredFees = 0;
     let merchandiseCost = 0;
+    let ivaNonRecoverable = 0;
     let coveredShipping = 0;
     let coveredOrdersEquivalent = 0;
     const byProduct = new Map<string, ProductAggregate>();
@@ -229,7 +232,8 @@ export async function GET(request: NextRequest) {
         const unitCost = historicalCostForDate(product, product ? historyByProduct.get(Number(product.id)) : undefined, orderDate);
         const hasCost = unitCost > 0;
         const rowCost = hasCost ? unitCost * quantity : 0;
-        return { itemId, quantity, rowSales, rowFee, title, hasCost, rowCost };
+        const rowIvaNonRecoverable = hasCost ? numberValue(product?.iva_nr) * quantity : 0;
+        return { itemId, quantity, rowSales, rowFee, title, hasCost, rowCost, rowIvaNonRecoverable };
       });
 
       const coveredOrderSales = enrichedRows.filter((row) => row.hasCost).reduce((sum, row) => sum + row.rowSales, 0);
@@ -252,6 +256,7 @@ export async function GET(request: NextRequest) {
           coveredSales += row.rowSales;
           coveredFees += row.rowFee;
           merchandiseCost += row.rowCost;
+          ivaNonRecoverable += row.rowIvaNonRecoverable;
         } else {
           const prior = missing.get(row.itemId) || { itemId: row.itemId, title: row.title, units: 0, sales: 0 };
           prior.units += row.quantity;
@@ -268,7 +273,7 @@ export async function GET(request: NextRequest) {
           ? rowVatDebit - rowVatCreditMerchandise - rowVatCreditFees - rowVatCreditShipping
           : 0;
         const rowContribution = row.hasCost
-          ? row.rowSales - row.rowFee - row.rowCost - shippingShare - rowIibb - rowVatBalance
+          ? row.rowSales - row.rowFee - row.rowCost - row.rowIvaNonRecoverable - shippingShare - rowIibb - rowVatBalance
           : 0;
 
         const aggregate = byProduct.get(row.itemId) || {
@@ -278,6 +283,7 @@ export async function GET(request: NextRequest) {
           sales: 0,
           fees: 0,
           cost: 0,
+          ivaNonRecoverable: 0,
           shipping: 0,
           iibb: 0,
           vatDebit: 0,
@@ -293,6 +299,7 @@ export async function GET(request: NextRequest) {
         aggregate.sales += row.rowSales;
         aggregate.fees += row.rowFee;
         aggregate.cost += row.rowCost;
+        aggregate.ivaNonRecoverable += row.rowIvaNonRecoverable;
         aggregate.shipping += shippingShare;
         aggregate.iibb += rowIibb;
         aggregate.vatDebit += rowVatDebit;
@@ -313,7 +320,7 @@ export async function GET(request: NextRequest) {
     const vatCreditShipping = ivaEnabled ? vatFromGross(coveredShipping) : 0;
     const vatCredits = vatCreditMerchandise + vatCreditFees + vatCreditShipping;
     const vatBalance = ivaEnabled ? vatDebit - vatCredits : 0;
-    const knownContribution = coveredSales - coveredFees - merchandiseCost - coveredShipping - iibb - vatBalance;
+    const knownContribution = coveredSales - coveredFees - merchandiseCost - ivaNonRecoverable - coveredShipping - iibb - vatBalance;
     const coverage = units > 0 ? (coveredUnits / units) * 100 : 0;
 
     const productsReport = Array.from(byProduct.values())
@@ -351,6 +358,7 @@ export async function GET(request: NextRequest) {
         coveredSales,
         coveredFees,
         merchandiseCost,
+        ivaNonRecoverable,
         shipping: coveredShipping,
         iibb,
         vatDebit,
@@ -372,6 +380,7 @@ export async function GET(request: NextRequest) {
       },
       notes: [
         "El resultado usa solamente ventas con costo cargado.",
+        "El IVA no recuperable cargado manualmente en Publicaciones se trata como un costo económico adicional y no genera crédito fiscal.",
         `Se imputa un envío de $${shippingPerOrder.toLocaleString("es-AR")} por orden pagada y se prorratea si una orden mezcla productos con y sin costo.`,
         ivaEnabled
           ? "Modo Responsable Inscripto: calcula IVA débito sobre ventas e IVA crédito sobre mercadería, comisión y envío, suponiendo importes IVA incluido al 21%."

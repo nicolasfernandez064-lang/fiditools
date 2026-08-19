@@ -37,6 +37,7 @@ type Summary = {
   coveredSales: number;
   coveredFees: number;
   merchandiseCost: number;
+  ivaNonRecoverable: number;
   shipping: number;
   iibb: number;
   vatDebit: number;
@@ -57,6 +58,7 @@ type ProductRow = {
   sales: number;
   fees: number;
   cost: number;
+  ivaNonRecoverable: number;
   shipping: number;
   iibb: number;
   vatBalance: number;
@@ -173,7 +175,7 @@ export function Reports() {
     const products = state.data?.products || [];
     if (!products.length) return;
     const rows = [
-      ["Publicación", "Producto", "Unidades", "Ventas", "Comisión", "Envío", "Costo", "IIBB", "IVA saldo", "Resultado estimado", "Margen %", "Costo cargado"],
+      ["Publicación", "Producto", "Unidades", "Ventas", "Comisión", "Envío", "Costo", "IVA NR", "IIBB", "IVA saldo", "Resultado estimado", "Margen %", "Costo cargado"],
       ...products.map((row) => [
         row.itemId,
         row.title,
@@ -182,6 +184,7 @@ export function Reports() {
         row.fees,
         row.shipping,
         row.cost,
+        row.ivaNonRecoverable,
         row.iibb,
         row.vatBalance,
         row.contribution,
@@ -254,6 +257,7 @@ export function Reports() {
             <Metric icon={<ShoppingBag />} label="Comisión ML" value={money.format(summary.fees)} detail="Suma del sale_fee informado" />
             <Metric icon={<Truck />} label="Envíos imputados" value={money.format(summary.shipping)} detail={`${money.format(SHIPPING_ARS)} por orden cubierta`} />
             <Metric icon={<Boxes />} label="Costo mercadería" value={money.format(summary.merchandiseCost)} detail={`${percent.format(summary.coverage)}% de unidades con costo`} />
+            <Metric icon={<ReceiptText />} label="IVA no recuperable" value={money.format(summary.ivaNonRecoverable)} detail="Cargado manualmente en Publicaciones" />
             <Metric icon={<ReceiptText />} label="IIBB estimado" value={money.format(summary.iibb)} detail={`Alícuota promedio ${IIBB_RATE}%`} />
             {ivaEnabled ? <Metric icon={<ReceiptText />} label="IVA saldo" value={money.format(summary.vatBalance)} detail={`Débito ${money.format(summary.vatDebit)} · Crédito ${money.format(summary.vatCredits)}`} highlight={summary.vatBalance <= 0} /> : <Metric icon={<ReceiptText />} label="IVA" value="Desactivado" detail="Modo Monotributo" />}
             <Metric icon={<CircleDollarSign />} label="Resultado estimado" value={money.format(summary.knownContribution)} detail={`Margen ${percent.format(summary.knownMargin)}% sobre ventas cubiertas`} highlight={summary.knownContribution >= 0} />
@@ -290,6 +294,7 @@ export function Reports() {
                         <th className="px-3 py-3 text-right">Comisión</th>
                         <th className="px-3 py-3 text-right">Envío</th>
                         <th className="px-3 py-3 text-right">Costo</th>
+                        <th className="px-3 py-3 text-right">IVA NR</th>
                         <th className="px-3 py-3 text-right">IIBB</th>
                         {ivaEnabled ? <th className="px-3 py-3 text-right">IVA saldo</th> : null}
                         <th className="px-3 py-3 text-right">Resultado</th>
@@ -373,6 +378,7 @@ function ProductReportRow({ row, ivaEnabled }: { row: ProductRow; ivaEnabled: bo
       <td className="px-3 py-4 text-right text-slate-400">{money.format(row.fees)}</td>
       <td className="px-3 py-4 text-right text-slate-400">{row.hasCost ? money.format(row.shipping) : "—"}</td>
       <td className="px-3 py-4 text-right">{row.hasCost ? money.format(row.cost) : <Badge className="border-amber-400/[0.15] bg-amber-500/[0.08] text-amber-200">Sin costo</Badge>}</td>
+      <td className="px-3 py-4 text-right">{row.hasCost ? money.format(row.ivaNonRecoverable) : "—"}</td>
       <td className="px-3 py-4 text-right text-slate-400">{row.hasCost ? money.format(row.iibb) : "—"}</td>
       {ivaEnabled ? <td className="px-3 py-4 text-right text-slate-400">{row.hasCost ? money.format(row.vatBalance) : "—"}</td> : null}
       <td className={`px-3 py-4 text-right font-bold ${row.hasCost ? row.contribution >= 0 ? "text-emerald-300" : "text-rose-300" : "text-slate-600"}`}>{row.hasCost ? money.format(row.contribution) : "—"}</td>
