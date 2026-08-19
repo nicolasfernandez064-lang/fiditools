@@ -46,6 +46,8 @@ type SaleRow = {
   usdRate: number;
   unitCostArs: number;
   merchandiseCost: number;
+  unitIvaNonRecoverable: number;
+  ivaNonRecoverable: number;
   knownResult: number;
   margin: number;
   hasCost: boolean;
@@ -63,6 +65,7 @@ type Payload = {
     coveredSales: number;
     coveredUnits: number;
     merchandiseCost: number;
+    ivaNonRecoverable: number;
     knownResult: number;
     orders: number;
     knownMargin: number;
@@ -174,8 +177,8 @@ export function Sales() {
   const exportCsv = () => {
     if (!filtered.length) return;
     const data = [
-      ["Fecha", "Orden", "Estado", "Producto", "MLA", "SKU", "Unidades", "Venta", "Comisión", "Costo USD", "USD/ARS", "Costo ARS", "Resultado conocido", "Margen %"],
-      ...filtered.map((row) => [row.date, row.orderId, row.status, row.title, row.itemId, row.sku, row.quantity, row.sale, row.fee, row.costUsd, row.usdRate, row.merchandiseCost, row.knownResult, row.margin.toFixed(2)])
+      ["Fecha", "Orden", "Estado", "Producto", "MLA", "SKU", "Unidades", "Venta", "Comisión", "Costo USD", "USD/ARS", "Costo ARS", "IVA no recuperable", "Resultado conocido", "Margen %"],
+      ...filtered.map((row) => [row.date, row.orderId, row.status, row.title, row.itemId, row.sku, row.quantity, row.sale, row.fee, row.costUsd, row.usdRate, row.merchandiseCost, row.ivaNonRecoverable, row.knownResult, row.margin.toFixed(2)])
     ];
     const csv = data.map((line) => line.map(csvEscape).join(";")).join("\n");
     const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
@@ -229,11 +232,12 @@ export function Sales() {
 
       {summary ? (
         <>
-          <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
             <Metric icon={CircleDollarSign} label="Ventas" value={money.format(summary.sales)} />
             <Metric icon={ShoppingBag} label="Órdenes" value={integer.format(summary.orders)} />
             <Metric icon={PackageSearch} label="Unidades" value={integer.format(summary.units)} />
             <Metric icon={WalletCards} label="Comisión ML" value={money.format(summary.fees)} />
+            <Metric icon={AlertTriangle} label="IVA no recuperable" value={money.format(summary.ivaNonRecoverable)} tone={summary.ivaNonRecoverable > 0 ? "warn" : "neutral"} />
             <Metric icon={CircleDollarSign} label="Resultado conocido" value={money.format(summary.knownResult)} tone={summary.knownResult >= 0 ? "good" : "bad"} />
             <Metric icon={Percent} label="Margen conocido" value={`${percent.format(summary.knownMargin)}%`} tone={summary.knownMargin >= 10 ? "good" : summary.knownMargin >= 0 ? "warn" : "bad"} />
           </div>
@@ -259,7 +263,7 @@ export function Sales() {
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[1150px] border-collapse text-sm">
-                  <thead><tr className="border-y border-white/[0.07] bg-white/[0.025] text-left text-[11px] uppercase tracking-wider text-slate-500"><th className="px-4 py-3">Fecha</th><th className="px-3 py-3">Producto</th><th className="px-3 py-3 text-right">Unid.</th><th className="px-3 py-3 text-right">Venta</th><th className="px-3 py-3 text-right">Costo</th><th className="px-3 py-3 text-right">Comisión</th><th className="px-3 py-3 text-right">Resultado</th><th className="px-3 py-3 text-right">Margen</th><th className="px-3 py-3">Estado</th><th className="w-10 px-3 py-3" /></tr></thead>
+                  <thead><tr className="border-y border-white/[0.07] bg-white/[0.025] text-left text-[11px] uppercase tracking-wider text-slate-500"><th className="px-4 py-3">Fecha</th><th className="px-3 py-3">Producto</th><th className="px-3 py-3 text-right">Unid.</th><th className="px-3 py-3 text-right">Venta</th><th className="px-3 py-3 text-right">Costo</th><th className="px-3 py-3 text-right">IVA NR</th><th className="px-3 py-3 text-right">Comisión</th><th className="px-3 py-3 text-right">Resultado</th><th className="px-3 py-3 text-right">Margen</th><th className="px-3 py-3">Estado</th><th className="w-10 px-3 py-3" /></tr></thead>
                   <tbody>{paginated.map((row) => <SaleTableRow key={row.rowId} row={row} expanded={expanded === row.rowId} onToggle={() => setExpanded(expanded === row.rowId ? null : row.rowId)} />)}</tbody>
                 </table>
               </div>
@@ -268,7 +272,7 @@ export function Sales() {
             </CardContent>
           </Card>
 
-          <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-400/[0.12] bg-amber-500/[0.05] p-4 text-xs leading-5 text-amber-100/70"><AlertTriangle className="mt-0.5 size-4 shrink-0" /><span>Resultado conocido = venta − comisión ML − costo de mercadería. Todavía no descuenta envío, IIBB, percepciones ni efecto neto de IVA.</span></div>
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-400/[0.12] bg-amber-500/[0.05] p-4 text-xs leading-5 text-amber-100/70"><AlertTriangle className="mt-0.5 size-4 shrink-0" /><span>Resultado conocido = venta − comisión ML − costo de mercadería − IVA no recuperable. Todavía no descuenta envío, IIBB, percepciones ni efecto neto de IVA.</span></div>
         </>
       ) : null}
     </>
@@ -290,13 +294,14 @@ function SaleTableRow({ row, expanded, onToggle }: { row: SaleRow; expanded: boo
         <td className="px-3 py-4 text-right">{integer.format(row.quantity)}</td>
         <td className="px-3 py-4 text-right font-semibold text-white">{money.format(row.sale)}</td>
         <td className="px-3 py-4 text-right">{row.hasCost ? money.format(row.merchandiseCost) : <Badge className="border-amber-400/[0.15] bg-amber-500/[0.08] text-amber-200">Sin costo</Badge>}</td>
+        <td className="px-3 py-4 text-right text-amber-200/80">{row.hasCost ? money.format(row.ivaNonRecoverable) : "—"}</td>
         <td className="px-3 py-4 text-right text-slate-400">{money.format(row.fee)}</td>
         <td className={`px-3 py-4 text-right font-bold ${!row.hasCost ? "text-slate-600" : row.knownResult >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{row.hasCost ? money.format(row.knownResult) : "—"}</td>
         <td className="px-3 py-4 text-right">{row.hasCost ? <MarginBadge value={row.margin} /> : "—"}</td>
         <td className="px-3 py-4"><Badge className="border-emerald-400/[0.15] bg-emerald-500/[0.08] text-emerald-200">{statusText}</Badge></td>
         <td className="px-3 py-4"><Button variant="ghost" size="icon" onClick={onToggle} aria-label="Ver detalle">{expanded ? <ChevronUp /> : <ChevronDown />}</Button></td>
       </tr>
-      {expanded ? <tr className="border-b border-white/[0.055] bg-slate-950/50"><td colSpan={10} className="px-5 py-5"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6"><Detail label="Costo USD" value={row.hasCost ? usd.format(row.costUsd) : "Sin costo"} /><Detail label="USD / ARS usado" value={row.hasCost ? money.format(row.usdRate).replace("$", "$") : "—"} /><Detail label="Costo unitario ARS" value={row.hasCost ? money.format(row.unitCostArs) : "—"} /><Detail label="Precio unitario" value={money.format(row.unitPrice)} /><Detail label="Comprador" value={row.buyerNickname || "—"} /><Detail label="Fuente del costo" value={row.costSource === "history" ? "Histórico" : row.costSource === "current" ? "Actual" : "Sin costo"} /></div></td></tr> : null}
+      {expanded ? <tr className="border-b border-white/[0.055] bg-slate-950/50"><td colSpan={11} className="px-5 py-5"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6"><Detail label="Costo USD" value={row.hasCost ? usd.format(row.costUsd) : "Sin costo"} /><Detail label="USD / ARS usado" value={row.hasCost ? money.format(row.usdRate).replace("$", "$") : "—"} /><Detail label="Costo unitario ARS" value={row.hasCost ? money.format(row.unitCostArs) : "—"} /><Detail label="IVA NR unitario" value={row.hasCost ? money.format(row.unitIvaNonRecoverable) : "—"} /><Detail label="IVA NR total" value={row.hasCost ? money.format(row.ivaNonRecoverable) : "—"} /><Detail label="Precio unitario" value={money.format(row.unitPrice)} /><Detail label="Comprador" value={row.buyerNickname || "—"} /><Detail label="Fuente del costo" value={row.costSource === "history" ? "Histórico" : row.costSource === "current" ? "Actual" : "Sin costo"} /></div></td></tr> : null}
     </>
   );
 }

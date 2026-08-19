@@ -3,6 +3,7 @@ import { getSql } from "@/lib/database";
 import { clearSession } from "@/lib/session";
 import { getValidMeliSession, meliFetch, MeliApiError } from "@/lib/meli";
 import type { MeliOrder, MeliOrdersSearch, MeliUser } from "@/types/meli";
+import { coreProfitability, numberValue } from "@/lib/profitability";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ type CostRow = {
   current_cost_ars: number;
   current_cost_usd: number;
   current_usd_rate: number;
+  iva_nr: number;
   updated_at: string;
 };
 
@@ -27,11 +29,6 @@ type HistoryRow = {
   usd_rate: number;
   created_at: string;
 };
-
-function numberValue(value: unknown) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
 function normalizeDate(input: string | null, fallback: Date) {
   if (!input || !/^\d{4}-\d{2}-\d{2}$/.test(input)) return fallback;
@@ -140,7 +137,7 @@ export async function GET(request: NextRequest) {
     const sellerId = String(user.id);
     const products = (await sql`
       SELECT id, meli_item_id, title, current_cost_ars, current_cost_usd,
-             current_usd_rate, updated_at
+             current_usd_rate, iva_nr, updated_at
       FROM products
       WHERE seller_id = ${sellerId}
     `) as unknown as CostRow[];
@@ -173,8 +170,13 @@ export async function GET(request: NextRequest) {
         const cost = historicalCostForDate(product, product ? historyByProduct.get(Number(product.id)) : undefined, orderDate);
         const hasCost = cost.costArs > 0;
         const merchandiseCost = hasCost ? cost.costArs * quantity : 0;
-        const knownResult = hasCost ? sale - fee - merchandiseCost : 0;
-        const margin = hasCost && sale > 0 ? (knownResult / sale) * 100 : 0;
+        const unitIvaNonRecoverable = hasCost ? numberValue(product?.iva_nr) : 0;
+        const ivaNonRecoverable = unitIvaNonRecoverable * quantity;
+        const profitability = hasCost
+          ? coreProfitability({ sales: sale, fees: fee, merchandiseCost, ivaNonRecoverable })
+          : null;
+        const knownResult = profitability?.result ?? 0;
+        const margin = profitability?.margin ?? 0;
 
         return {
           rowId: `${order.id}-${itemId}-${index}`,
@@ -193,6 +195,8 @@ export async function GET(request: NextRequest) {
           usdRate: cost.usdRate,
           unitCostArs: cost.costArs,
           merchandiseCost,
+          unitIvaNonRecoverable,
+          ivaNonRecoverable,
           knownResult,
           margin,
           hasCost,
@@ -210,11 +214,12 @@ export async function GET(request: NextRequest) {
           acc.coveredSales += row.sale;
           acc.coveredUnits += row.quantity;
           acc.merchandiseCost += row.merchandiseCost;
+          acc.ivaNonRecoverable += row.ivaNonRecoverable;
           acc.knownResult += row.knownResult;
         }
         return acc;
       },
-      { sales: 0, units: 0, fees: 0, coveredSales: 0, coveredUnits: 0, merchandiseCost: 0, knownResult: 0 }
+      { sales: 0, units: 0, fees: 0, coveredSales: 0, coveredUnits: 0, merchandiseCost: 0, ivaNonRecoverable: 0, knownResult: 0 }
     );
 
     return NextResponse.json({

@@ -3,6 +3,7 @@ import { getSql } from "@/lib/database";
 import { clearSession } from "@/lib/session";
 import { getValidMeliSession, meliFetch, MeliApiError } from "@/lib/meli";
 import type { MeliOrder, MeliOrdersSearch, MeliUser } from "@/types/meli";
+import { fullProfitability, iibbFromSales, numberValue, VAT_RATE, vatFromGross } from "@/lib/profitability";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,8 +12,6 @@ const PAGE_SIZE = 50;
 const MAX_ORDERS = 1000;
 const DEFAULT_SHIPPING_ARS = 6600;
 const DEFAULT_IIBB_RATE = 0.04;
-const VAT_RATE = 0.21;
-const VAT_FACTOR = VAT_RATE / (1 + VAT_RATE);
 
 type CostRow = {
   id: number;
@@ -52,11 +51,6 @@ type ProductAggregate = {
   margin: number;
   hasCost: boolean;
 };
-
-function numberValue(value: unknown) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
 function boolValue(value: string | null, fallback: boolean) {
   if (value === null) return fallback;
@@ -101,16 +95,6 @@ function historicalCostForDate(
 
   const nextChange = rows.find((entry) => new Date(entry.created_at).getTime() > orderTimestamp);
   return nextChange ? numberValue(nextChange.cost_ars) : numberValue(product.current_cost_ars);
-}
-
-function vatFromGross(gross: number) {
-  return gross > 0 ? gross * VAT_FACTOR : 0;
-}
-
-function iibbFromSales(grossSales: number, ivaEnabled: boolean, rate: number) {
-  if (grossSales <= 0 || rate <= 0) return 0;
-  const base = ivaEnabled ? grossSales / (1 + VAT_RATE) : grossSales;
-  return base * rate;
 }
 
 async function fetchOrders(
@@ -273,7 +257,15 @@ export async function GET(request: NextRequest) {
           ? rowVatDebit - rowVatCreditMerchandise - rowVatCreditFees - rowVatCreditShipping
           : 0;
         const rowContribution = row.hasCost
-          ? row.rowSales - row.rowFee - row.rowCost - row.rowIvaNonRecoverable - shippingShare - rowIibb - rowVatBalance
+          ? fullProfitability({
+              sales: row.rowSales,
+              fees: row.rowFee,
+              merchandiseCost: row.rowCost,
+              ivaNonRecoverable: row.rowIvaNonRecoverable,
+              shipping: shippingShare,
+              iibb: rowIibb,
+              vatBalance: rowVatBalance
+            }).result
           : 0;
 
         const aggregate = byProduct.get(row.itemId) || {
@@ -320,7 +312,15 @@ export async function GET(request: NextRequest) {
     const vatCreditShipping = ivaEnabled ? vatFromGross(coveredShipping) : 0;
     const vatCredits = vatCreditMerchandise + vatCreditFees + vatCreditShipping;
     const vatBalance = ivaEnabled ? vatDebit - vatCredits : 0;
-    const knownContribution = coveredSales - coveredFees - merchandiseCost - ivaNonRecoverable - coveredShipping - iibb - vatBalance;
+    const knownContribution = fullProfitability({
+      sales: coveredSales,
+      fees: coveredFees,
+      merchandiseCost,
+      ivaNonRecoverable,
+      shipping: coveredShipping,
+      iibb,
+      vatBalance
+    }).result;
     const coverage = units > 0 ? (coveredUnits / units) * 100 : 0;
 
     const productsReport = Array.from(byProduct.values())
