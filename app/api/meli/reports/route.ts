@@ -9,6 +9,10 @@ export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 50;
 const MAX_ORDERS = 1000;
+const DEFAULT_SHIPPING_ARS = 6600;
+const DEFAULT_IIBB_RATE = 0.04;
+const VAT_RATE = 0.21;
+const VAT_FACTOR = VAT_RATE / (1 + VAT_RATE);
 
 type CostRow = {
   id: number;
@@ -35,6 +39,13 @@ type ProductAggregate = {
   sales: number;
   fees: number;
   cost: number;
+  shipping: number;
+  iibb: number;
+  vatDebit: number;
+  vatCreditMerchandise: number;
+  vatCreditFees: number;
+  vatCreditShipping: number;
+  vatBalance: number;
   contribution: number;
   margin: number;
   hasCost: boolean;
@@ -43,6 +54,11 @@ type ProductAggregate = {
 function numberValue(value: unknown) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function boolValue(value: string | null, fallback: boolean) {
+  if (value === null) return fallback;
+  return value === "1" || value === "true" || value === "yes";
 }
 
 function normalizeDate(input: string | null, fallback: Date) {
@@ -83,6 +99,16 @@ function historicalCostForDate(
 
   const nextChange = rows.find((entry) => new Date(entry.created_at).getTime() > orderTimestamp);
   return nextChange ? numberValue(nextChange.cost_ars) : numberValue(product.current_cost_ars);
+}
+
+function vatFromGross(gross: number) {
+  return gross > 0 ? gross * VAT_FACTOR : 0;
+}
+
+function iibbFromSales(grossSales: number, ivaEnabled: boolean, rate: number) {
+  if (grossSales <= 0 || rate <= 0) return 0;
+  const base = ivaEnabled ? grossSales / (1 + VAT_RATE) : grossSales;
+  return base * rate;
 }
 
 async function fetchOrders(
@@ -137,6 +163,10 @@ export async function GET(request: NextRequest) {
 
     const from = normalizeDate(request.nextUrl.searchParams.get("from"), defaultFrom);
     const to = normalizeDate(request.nextUrl.searchParams.get("to"), now);
+    const ivaEnabled = boolValue(request.nextUrl.searchParams.get("iva"), true);
+    const shippingPerOrder = Math.max(0, numberValue(request.nextUrl.searchParams.get("shipping") || DEFAULT_SHIPPING_ARS));
+    const iibbRatePercent = Math.max(0, numberValue(request.nextUrl.searchParams.get("iibb") || DEFAULT_IIBB_RATE * 100));
+    const iibbRate = iibbRatePercent / 100;
 
     if (from.getTime() > to.getTime()) {
       return NextResponse.json({ error: "La fecha desde no puede ser posterior a la fecha hasta." }, { status: 400 });
@@ -178,73 +208,120 @@ export async function GET(request: NextRequest) {
     let coveredSales = 0;
     let coveredFees = 0;
     let merchandiseCost = 0;
+    let coveredShipping = 0;
+    let coveredOrdersEquivalent = 0;
     const byProduct = new Map<string, ProductAggregate>();
     const missing = new Map<string, { itemId: string; title: string; units: number; sales: number }>();
 
     for (const order of orders) {
       sales += numberValue(order.total_amount);
       const orderDate = order.date_closed || order.date_created;
+      const itemRows = order.order_items || [];
+      const orderItemsSales = itemRows.reduce((sum, row) => sum + numberValue(row.unit_price) * Math.max(0, numberValue(row.quantity)), 0);
 
-      for (const row of order.order_items || []) {
+      const enrichedRows = itemRows.map((row) => {
         const itemId = String(row.item?.id || "");
-        if (!itemId) continue;
         const quantity = Math.max(0, numberValue(row.quantity));
         const rowSales = numberValue(row.unit_price) * quantity;
         const rowFee = numberValue(row.sale_fee);
         const title = row.item?.title || itemId;
-        units += quantity;
-        fees += rowFee;
-
-        const product = productByItem.get(itemId);
+        const product = itemId ? productByItem.get(itemId) : undefined;
         const unitCost = historicalCostForDate(product, product ? historyByProduct.get(Number(product.id)) : undefined, orderDate);
         const hasCost = unitCost > 0;
         const rowCost = hasCost ? unitCost * quantity : 0;
+        return { itemId, quantity, rowSales, rowFee, title, hasCost, rowCost };
+      });
 
-        if (hasCost) {
-          coveredUnits += quantity;
-          coveredSales += rowSales;
-          coveredFees += rowFee;
-          merchandiseCost += rowCost;
+      const coveredOrderSales = enrichedRows.filter((row) => row.hasCost).reduce((sum, row) => sum + row.rowSales, 0);
+      const coverageRatio = orderItemsSales > 0 ? Math.min(1, coveredOrderSales / orderItemsSales) : 0;
+      const orderCoveredShipping = shippingPerOrder * coverageRatio;
+      coveredShipping += orderCoveredShipping;
+      coveredOrdersEquivalent += coverageRatio;
+
+      for (const row of enrichedRows) {
+        if (!row.itemId) continue;
+        units += row.quantity;
+        fees += row.rowFee;
+
+        const shippingShare = coveredOrderSales > 0 && row.hasCost
+          ? orderCoveredShipping * (row.rowSales / coveredOrderSales)
+          : 0;
+
+        if (row.hasCost) {
+          coveredUnits += row.quantity;
+          coveredSales += row.rowSales;
+          coveredFees += row.rowFee;
+          merchandiseCost += row.rowCost;
         } else {
-          const prior = missing.get(itemId) || { itemId, title, units: 0, sales: 0 };
-          prior.units += quantity;
-          prior.sales += rowSales;
-          missing.set(itemId, prior);
+          const prior = missing.get(row.itemId) || { itemId: row.itemId, title: row.title, units: 0, sales: 0 };
+          prior.units += row.quantity;
+          prior.sales += row.rowSales;
+          missing.set(row.itemId, prior);
         }
 
-        const aggregate = byProduct.get(itemId) || {
-          itemId,
-          title,
+        const rowIibb = row.hasCost ? iibbFromSales(row.rowSales, ivaEnabled, iibbRate) : 0;
+        const rowVatDebit = row.hasCost && ivaEnabled ? vatFromGross(row.rowSales) : 0;
+        const rowVatCreditMerchandise = row.hasCost && ivaEnabled ? vatFromGross(row.rowCost) : 0;
+        const rowVatCreditFees = row.hasCost && ivaEnabled ? vatFromGross(row.rowFee) : 0;
+        const rowVatCreditShipping = row.hasCost && ivaEnabled ? vatFromGross(shippingShare) : 0;
+        const rowVatBalance = ivaEnabled
+          ? rowVatDebit - rowVatCreditMerchandise - rowVatCreditFees - rowVatCreditShipping
+          : 0;
+        const rowContribution = row.hasCost
+          ? row.rowSales - row.rowFee - row.rowCost - shippingShare - rowIibb - rowVatBalance
+          : 0;
+
+        const aggregate = byProduct.get(row.itemId) || {
+          itemId: row.itemId,
+          title: row.title,
           units: 0,
           sales: 0,
           fees: 0,
           cost: 0,
+          shipping: 0,
+          iibb: 0,
+          vatDebit: 0,
+          vatCreditMerchandise: 0,
+          vatCreditFees: 0,
+          vatCreditShipping: 0,
+          vatBalance: 0,
           contribution: 0,
           margin: 0,
-          hasCost
+          hasCost: row.hasCost
         };
-        aggregate.units += quantity;
-        aggregate.sales += rowSales;
-        aggregate.fees += rowFee;
-        aggregate.cost += rowCost;
-        aggregate.hasCost = aggregate.hasCost || hasCost;
-        byProduct.set(itemId, aggregate);
+        aggregate.units += row.quantity;
+        aggregate.sales += row.rowSales;
+        aggregate.fees += row.rowFee;
+        aggregate.cost += row.rowCost;
+        aggregate.shipping += shippingShare;
+        aggregate.iibb += rowIibb;
+        aggregate.vatDebit += rowVatDebit;
+        aggregate.vatCreditMerchandise += rowVatCreditMerchandise;
+        aggregate.vatCreditFees += rowVatCreditFees;
+        aggregate.vatCreditShipping += rowVatCreditShipping;
+        aggregate.vatBalance += rowVatBalance;
+        aggregate.contribution += rowContribution;
+        aggregate.hasCost = aggregate.hasCost || row.hasCost;
+        byProduct.set(row.itemId, aggregate);
       }
     }
 
-    const productsReport = Array.from(byProduct.values())
-      .map((row) => {
-        const contribution = row.hasCost ? row.sales - row.fees - row.cost : 0;
-        return {
-          ...row,
-          contribution,
-          margin: row.hasCost && row.sales > 0 ? (contribution / row.sales) * 100 : 0
-        };
-      })
-      .sort((a, b) => b.sales - a.sales);
-
-    const knownContribution = coveredSales - coveredFees - merchandiseCost;
+    const iibb = iibbFromSales(coveredSales, ivaEnabled, iibbRate);
+    const vatDebit = ivaEnabled ? vatFromGross(coveredSales) : 0;
+    const vatCreditMerchandise = ivaEnabled ? vatFromGross(merchandiseCost) : 0;
+    const vatCreditFees = ivaEnabled ? vatFromGross(coveredFees) : 0;
+    const vatCreditShipping = ivaEnabled ? vatFromGross(coveredShipping) : 0;
+    const vatCredits = vatCreditMerchandise + vatCreditFees + vatCreditShipping;
+    const vatBalance = ivaEnabled ? vatDebit - vatCredits : 0;
+    const knownContribution = coveredSales - coveredFees - merchandiseCost - coveredShipping - iibb - vatBalance;
     const coverage = units > 0 ? (coveredUnits / units) * 100 : 0;
+
+    const productsReport = Array.from(byProduct.values())
+      .map((row) => ({
+        ...row,
+        margin: row.hasCost && row.sales > 0 ? (row.contribution / row.sales) * 100 : 0
+      }))
+      .sort((a, b) => b.sales - a.sales);
 
     return NextResponse.json({
       connected: true,
@@ -257,6 +334,14 @@ export async function GET(request: NextRequest) {
         from: request.nextUrl.searchParams.get("from") || startOfDayIso(from).slice(0, 10),
         to: request.nextUrl.searchParams.get("to") || endOfDayIso(to).slice(0, 10)
       },
+      taxMode: ivaEnabled ? "ri" : "mono",
+      assumptions: {
+        ivaEnabled,
+        ivaRate: VAT_RATE * 100,
+        iibbRate: iibbRatePercent,
+        shippingPerOrder,
+        coveredOrdersEquivalent
+      },
       summary: {
         sales,
         orders: orders.length,
@@ -266,6 +351,14 @@ export async function GET(request: NextRequest) {
         coveredSales,
         coveredFees,
         merchandiseCost,
+        shipping: coveredShipping,
+        iibb,
+        vatDebit,
+        vatCreditMerchandise,
+        vatCreditFees,
+        vatCreditShipping,
+        vatCredits,
+        vatBalance,
         knownContribution,
         knownMargin: coveredSales > 0 ? (knownContribution / coveredSales) * 100 : 0,
         coverage
@@ -278,8 +371,12 @@ export async function GET(request: NextRequest) {
         capped
       },
       notes: [
-        "El resultado conocido usa solamente ventas con costo cargado.",
-        "Todavía no descuenta envíos, IIBB, percepciones ni efecto neto de IVA.",
+        "El resultado usa solamente ventas con costo cargado.",
+        `Se imputa un envío de $${shippingPerOrder.toLocaleString("es-AR")} por orden pagada y se prorratea si una orden mezcla productos con y sin costo.`,
+        ivaEnabled
+          ? "Modo Responsable Inscripto: calcula IVA débito sobre ventas e IVA crédito sobre mercadería, comisión y envío, suponiendo importes IVA incluido al 21%."
+          : "Modo Monotributo: no calcula IVA débito/crédito y aplica IIBB directamente sobre la venta bruta.",
+        `IIBB se estima al ${iibbRatePercent.toFixed(2)}%.`,
         "Para ventas anteriores a un cambio de costo, FidiTools intenta usar el costo histórico vigente en esa fecha."
       ]
     });
