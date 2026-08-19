@@ -444,7 +444,7 @@ function PublicationRow({
       </td>
       <td className="px-4 py-4 text-right text-slate-400">{integer.format(publication.soldQuantity)}</td>
       <td className="px-4 py-4 text-right">
-        {hasCost ? (
+        {cost ? (
           <div>
             <span className="font-bold text-slate-100">{money.format(cost.cost)}</span>
             {cost.ivaNonRecoverable ? <small className="mt-1 block text-[10px] text-slate-600">+ {money.format(cost.ivaNonRecoverable)} IVA NR</small> : null}
