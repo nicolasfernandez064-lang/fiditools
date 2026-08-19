@@ -8,11 +8,8 @@ export interface PublicationCostHistoryEntry {
 
 export interface PublicationCostRecord {
   itemId: string;
-  /** Legacy/current ARS snapshot kept for backwards compatibility. */
   cost: number;
-  /** Source cost entered by the user. New FidiTools flow uses USD. */
   costUsd?: number;
-  /** USD/ARS rate that was active when this cost was last edited. */
   exchangeRate?: number;
   supplier: string;
   ivaNonRecoverable: number;
@@ -22,6 +19,11 @@ export interface PublicationCostRecord {
 }
 
 export type PublicationCostMap = Record<string, PublicationCostRecord>;
+
+export interface PublicationCostState {
+  costs: PublicationCostMap;
+  usdRate: number;
+}
 
 const PREFIX = "fiditools:publication-costs";
 const FX_PREFIX = "fiditools:usd-rate";
@@ -54,12 +56,27 @@ export function readUsdRate(sellerId: number) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-export function writeUsdRate(sellerId: number, value: number) {
+export function cacheUsdRate(sellerId: number, value: number) {
   if (typeof window === "undefined") return 0;
   const normalized = Number(value || 0);
   if (!Number.isFinite(normalized) || normalized <= 0) return 0;
   window.localStorage.setItem(fxStorageKey(sellerId), String(normalized));
   return normalized;
+}
+
+export function cachePublicationCost(sellerId: number, record: PublicationCostRecord) {
+  if (typeof window === "undefined") return record;
+  const all = readPublicationCosts(sellerId);
+  all[record.itemId] = record;
+  window.localStorage.setItem(storageKey(sellerId), JSON.stringify(all));
+  return record;
+}
+
+export function removeCachedPublicationCost(sellerId: number, itemId: string) {
+  if (typeof window === "undefined") return;
+  const all = readPublicationCosts(sellerId);
+  delete all[itemId];
+  window.localStorage.setItem(storageKey(sellerId), JSON.stringify(all));
 }
 
 export function currentCostArs(record: PublicationCostRecord | undefined, usdRate: number) {
@@ -69,57 +86,79 @@ export function currentCostArs(record: PublicationCostRecord | undefined, usdRat
   return Number(record.cost || 0);
 }
 
-export function writePublicationCost(
-  sellerId: number,
-  input: Omit<PublicationCostRecord, "updatedAt" | "history" | "cost"> & { cost?: number },
-  current?: PublicationCostRecord
-) {
-  if (typeof window === "undefined") return null;
-
-  const all = readPublicationCosts(sellerId);
-  const changedAt = new Date().toISOString();
-  const nextUsd = Number(input.costUsd || 0);
-  const nextFx = Number(input.exchangeRate || 0);
-  const nextArs = nextUsd > 0 && nextFx > 0 ? nextUsd * nextFx : Number(input.cost || 0);
-
-  const costChanged = Boolean(
-    current &&
-      (Number(current.costUsd || 0) !== nextUsd ||
-        Number(current.cost || 0) !== nextArs ||
-        Number(current.ivaNonRecoverable) !== Number(input.ivaNonRecoverable))
-  );
-
-  const history = [...(current?.history || [])];
-  if (costChanged && current) {
-    history.unshift({
-      cost: Number(current.cost || 0),
-      costUsd: Number(current.costUsd || 0) || undefined,
-      exchangeRate: Number(current.exchangeRate || 0) || undefined,
-      ivaNonRecoverable: Number(current.ivaNonRecoverable || 0),
-      changedAt: current.updatedAt || changedAt
-    });
+async function apiRequest<T>(body?: unknown, method = "GET") {
+  const response = await fetch("/api/publication-costs", {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store"
+  });
+  const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error || "No se pudo acceder a la base de datos.");
   }
-
-  const next: PublicationCostRecord = {
-    ...input,
-    cost: nextArs,
-    costUsd: nextUsd || undefined,
-    exchangeRate: nextFx || undefined,
-    ivaNonRecoverable: Number(input.ivaNonRecoverable || 0),
-    supplier: input.supplier.trim(),
-    notes: input.notes.trim(),
-    updatedAt: changedAt,
-    history: history.slice(0, 30)
-  };
-
-  all[input.itemId] = next;
-  window.localStorage.setItem(storageKey(sellerId), JSON.stringify(all));
-  return next;
+  return payload;
 }
 
-export function removePublicationCost(sellerId: number, itemId: string) {
-  if (typeof window === "undefined") return;
-  const all = readPublicationCosts(sellerId);
-  delete all[itemId];
-  window.localStorage.setItem(storageKey(sellerId), JSON.stringify(all));
+export async function fetchPublicationCostState(): Promise<PublicationCostState> {
+  const payload = await apiRequest<{ costs: PublicationCostMap; usdRate: number }>();
+  return {
+    costs: payload.costs || {},
+    usdRate: Number(payload.usdRate || 0)
+  };
+}
+
+export async function saveUsdRateRemote(sellerId: number, usdRate: number) {
+  const payload = await apiRequest<{ usdRate: number }>(
+    { action: "save-usd-rate", usdRate },
+    "POST"
+  );
+  const saved = Number(payload.usdRate || usdRate);
+  cacheUsdRate(sellerId, saved);
+  return saved;
+}
+
+export async function savePublicationCostRemote({
+  sellerId,
+  itemId,
+  title,
+  sku,
+  costUsd,
+  usdRate,
+  supplier,
+  ivaNonRecoverable,
+  notes
+}: {
+  sellerId: number;
+  itemId: string;
+  title: string;
+  sku?: string | null;
+  costUsd: number;
+  usdRate: number;
+  supplier: string;
+  ivaNonRecoverable: number;
+  notes: string;
+}) {
+  const payload = await apiRequest<{ record: PublicationCostRecord }>(
+    {
+      action: "save-cost",
+      itemId,
+      title,
+      sku,
+      costUsd,
+      usdRate,
+      supplier,
+      ivaNonRecoverable,
+      notes
+    },
+    "POST"
+  );
+  if (!payload.record) throw new Error("La base de datos no devolvió el costo guardado.");
+  cachePublicationCost(sellerId, payload.record);
+  return payload.record;
+}
+
+export async function deletePublicationCostRemote(sellerId: number, itemId: string) {
+  await apiRequest({ action: "delete-cost", itemId }, "POST");
+  removeCachedPublicationCost(sellerId, itemId);
 }

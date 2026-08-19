@@ -22,15 +22,16 @@
     "next": "^15.5.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "@neondatabase/serverless": "^1.0.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.7",
     "@types/node": "^22.15.30",
     "@types/react": "^19.0.14",
     "@types/react-dom": "^19.0.6",
-    "eslint": "^9.39.5",
-    "eslint-config-next": "^15.5.22",
+    "eslint": "^9.28.0",
+    "eslint-config-next": "^15.5.7",
     "tailwindcss": "^4.1.7",
     "typescript": "^5.8.3"
   }

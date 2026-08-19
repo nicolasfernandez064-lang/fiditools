@@ -31,11 +31,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import {
   currentCostArs,
+  deletePublicationCostRemote,
+  fetchPublicationCostState,
   readPublicationCosts,
   readUsdRate,
-  removePublicationCost,
-  writePublicationCost,
-  writeUsdRate,
+  savePublicationCostRemote,
+  saveUsdRateRemote,
   type PublicationCostMap,
   type PublicationCostRecord
 } from "@/lib/publication-costs";
@@ -106,10 +107,25 @@ export function Publications() {
         throw new Error(payload.error || "No se pudieron cargar las publicaciones.");
       }
 
-      setCosts(readPublicationCosts(payload.sellerId));
-      const storedUsdRate = readUsdRate(payload.sellerId);
-      setUsdRate(storedUsdRate);
-      setUsdRateDraft(storedUsdRate ? String(storedUsdRate) : "");
+      const localCosts = readPublicationCosts(payload.sellerId);
+      const localUsdRate = readUsdRate(payload.sellerId);
+
+      try {
+        const remote = await fetchPublicationCostState();
+        const mergedCosts = { ...localCosts, ...remote.costs };
+        const activeUsdRate = remote.usdRate || localUsdRate;
+        setCosts(mergedCosts);
+        setUsdRate(activeUsdRate);
+        setUsdRateDraft(activeUsdRate ? String(activeUsdRate) : "");
+        if (!remote.usdRate && localUsdRate) {
+          void saveUsdRateRemote(payload.sellerId, localUsdRate).catch(() => undefined);
+        }
+      } catch {
+        setCosts(localCosts);
+        setUsdRate(localUsdRate);
+        setUsdRateDraft(localUsdRate ? String(localUsdRate) : "");
+      }
+
       setState({ status: "connected", data: payload, error: "" });
     } catch (error) {
       setState({
@@ -181,14 +197,16 @@ export function Publications() {
     setOffset(0);
   }
 
-  function saveUsdRate() {
+  async function saveUsdRate() {
     if (!sellerId) return;
     const parsed = parseArgentineNumber(usdRateDraft);
     if (!Number.isFinite(parsed) || parsed <= 0) return;
-    const saved = writeUsdRate(sellerId, parsed);
-    if (saved) {
+    try {
+      const saved = await saveUsdRateRemote(sellerId, parsed);
       setUsdRate(saved);
       setUsdRateDraft(String(saved));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "No se pudo guardar la cotización.");
     }
   }
 
@@ -257,8 +275,8 @@ export function Publications() {
             <div className="flex gap-3">
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-300" />
               <div>
-                <strong className="font-semibold text-amber-200">Primera versión de costos.</strong>{" "}
-                Los costos se guardan en este navegador. La próxima etapa los migra a una base de datos para usarlos desde cualquier dispositivo y conservarlos por empresa.
+                <strong className="font-semibold text-emerald-200">Costos persistentes activos.</strong>{" "}
+                Los nuevos costos y la cotización USD se guardan en la base de datos de FidiTools y quedan disponibles desde cualquier dispositivo. Los datos locales anteriores se mantienen como respaldo hasta que los edites.
               </div>
             </div>
           </div>
@@ -424,9 +442,12 @@ export function Publications() {
             setSelected(null);
           }}
           onDelete={() => {
-            removePublicationCost(sellerId, selected.id);
-            updateCost(null, selected.id);
-            setSelected(null);
+            void deletePublicationCostRemote(sellerId, selected.id).then(() => {
+              updateCost(null, selected.id);
+              setSelected(null);
+            }).catch((error) => {
+              window.alert(error instanceof Error ? error.message : "No se pudo eliminar el costo.");
+            });
           }}
         />
       ) : null}
@@ -505,26 +526,30 @@ function QuickUsdCost({
     setValue(current?.costUsd ? String(current.costUsd) : "");
   }, [current?.costUsd]);
 
-  function save() {
+  async function save() {
     const parsed = parseArgentineNumber(value);
     if (!usdRate || !Number.isFinite(parsed) || parsed <= 0) return;
     if (Number(current?.costUsd || 0) === parsed) return;
 
     setSaving(true);
-    const saved = writePublicationCost(
-      sellerId,
-      {
+    try {
+      const saved = await savePublicationCostRemote({
+        sellerId,
         itemId: publication.id,
+        title: publication.title,
+        sku: publication.sellerSku,
         costUsd: parsed,
-        exchangeRate: usdRate,
+        usdRate,
         supplier: current?.supplier || "",
         ivaNonRecoverable: Number(current?.ivaNonRecoverable || 0),
         notes: current?.notes || ""
-      },
-      current
-    );
-    if (saved) onSave(saved);
-    setSaving(false);
+      });
+      onSave(saved);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "No se pudo guardar el costo.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -677,7 +702,7 @@ function CostEditor({
     ? ((publication.price - parsedCost - parsedIva) / publication.price) * 100
     : null;
 
-  function submit() {
+  async function submit() {
     if (!usdRate) {
       setError("Primero cargá la cotización USD/ARS en la parte superior de Publicaciones.");
       return;
@@ -691,25 +716,22 @@ function CostEditor({
       return;
     }
 
-    const saved = writePublicationCost(
-      sellerId,
-      {
+    try {
+      const saved = await savePublicationCostRemote({
+        sellerId,
         itemId: publication.id,
+        title: publication.title,
+        sku: publication.sellerSku,
         costUsd: parsedCostUsd,
-        exchangeRate: usdRate,
+        usdRate,
         supplier,
         ivaNonRecoverable: parsedIva,
         notes
-      },
-      current
-    );
-
-    if (!saved) {
-      setError("No se pudo guardar el costo en este navegador.");
-      return;
+      });
+      onSave(saved);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "No se pudo guardar el costo en la base de datos.");
     }
-
-    onSave(saved);
   }
 
   return (
