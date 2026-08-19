@@ -506,7 +506,7 @@ function UsdRatePanel({
   );
 }
 
-function QuickUsdCost({
+function QuickCostInputs({
   publication,
   sellerId,
   usdRate,
@@ -519,19 +519,23 @@ function QuickUsdCost({
   current?: PublicationCostRecord;
   onSave: (record: PublicationCostRecord) => void;
 }) {
-  const [value, setValue] = useState(current?.costUsd ? String(current.costUsd) : "");
-  const [saving, setSaving] = useState(false);
+  const [usdValue, setUsdValue] = useState(current?.costUsd ? String(current.costUsd) : "");
+  const [arsValue, setArsValue] = useState(currentCostArs(current, usdRate) > 0 ? String(Math.round(currentCostArs(current, usdRate))) : "");
+  const [saving, setSaving] = useState<"usd" | "ars" | null>(null);
+  const isManualArs = Boolean(current && !current.costUsd && Number(current.cost || 0) > 0);
 
   useEffect(() => {
-    setValue(current?.costUsd ? String(current.costUsd) : "");
-  }, [current?.costUsd]);
+    setUsdValue(current?.costUsd ? String(current.costUsd) : "");
+    const ars = currentCostArs(current, usdRate);
+    setArsValue(ars > 0 ? String(Math.round(ars)) : "");
+  }, [current, usdRate]);
 
-  async function save() {
-    const parsed = parseArgentineNumber(value);
+  async function saveUsd() {
+    const parsed = parseArgentineNumber(usdValue);
     if (!usdRate || !Number.isFinite(parsed) || parsed <= 0) return;
     if (Number(current?.costUsd || 0) === parsed) return;
 
-    setSaving(true);
+    setSaving("usd");
     try {
       const saved = await savePublicationCostRemote({
         sellerId,
@@ -539,6 +543,7 @@ function QuickUsdCost({
         title: publication.title,
         sku: publication.sellerSku,
         costUsd: parsed,
+        costMode: "usd",
         usdRate,
         supplier: current?.supplier || "",
         ivaNonRecoverable: Number(current?.ivaNonRecoverable || 0),
@@ -548,32 +553,86 @@ function QuickUsdCost({
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "No se pudo guardar el costo.");
     } finally {
-      setSaving(false);
+      setSaving(null);
+    }
+  }
+
+  async function saveArs() {
+    const parsed = parseArgentineNumber(arsValue);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    const currentArs = currentCostArs(current, usdRate);
+    if (isManualArs && Math.abs(currentArs - parsed) < 0.01) return;
+    if (!isManualArs && Math.abs(currentArs - parsed) < 0.01) return;
+
+    setSaving("ars");
+    try {
+      const saved = await savePublicationCostRemote({
+        sellerId,
+        itemId: publication.id,
+        title: publication.title,
+        sku: publication.sellerSku,
+        costArs: parsed,
+        costMode: "ars",
+        usdRate,
+        supplier: current?.supplier || "",
+        ivaNonRecoverable: Number(current?.ivaNonRecoverable || 0),
+        notes: current?.notes || ""
+      });
+      onSave(saved);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "No se pudo guardar el costo.");
+    } finally {
+      setSaving(null);
     }
   }
 
   return (
-    <div className="ml-auto w-[116px]">
-      <div className="relative">
-        <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-600">USD</span>
-        <input
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          onBlur={save}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-          }}
-          disabled={!usdRate || saving}
-          inputMode="decimal"
-          placeholder={usdRate ? "0" : "USD?"}
-          className="h-9 w-full rounded-lg border border-white/[0.10] bg-slate-950/[0.65] pl-9 pr-2 text-right text-xs font-bold text-slate-100 outline-none transition placeholder:text-slate-700 focus:border-cyan-400/[0.55] focus:ring-2 focus:ring-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-45"
-          title={!usdRate ? "Primero cargá la cotización USD/ARS" : "Editá y presioná Enter o hacé clic afuera para guardar"}
-        />
-      </div>
-      {current?.costUsd ? <span className="mt-1 block text-[10px] text-slate-700">Enter para guardar</span> : null}
-    </div>
+    <>
+      <td className="px-4 py-4 text-right">
+        <div className="ml-auto w-[116px]">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-600">USD</span>
+            <input
+              value={usdValue}
+              onChange={(event) => setUsdValue(event.target.value)}
+              onBlur={saveUsd}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              disabled={!usdRate || saving !== null}
+              inputMode="decimal"
+              placeholder={usdRate ? "0" : "USD?"}
+              className="h-9 w-full rounded-lg border border-white/[0.10] bg-slate-950/[0.65] pl-9 pr-2 text-right text-xs font-bold text-slate-100 outline-none transition placeholder:text-slate-700 focus:border-cyan-400/[0.55] focus:ring-2 focus:ring-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-45"
+              title={!usdRate ? "Primero cargá la cotización USD/ARS" : "Editar en USD cambia el costo a modo convertido"}
+            />
+          </div>
+          <span className="mt-1 block text-[10px] text-slate-700">{current?.costUsd ? "USD convertido" : "Cargar en USD"}</span>
+        </div>
+      </td>
+      <td className="px-4 py-4 text-right">
+        <div className="ml-auto w-[132px]">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-600">$</span>
+            <input
+              value={arsValue}
+              onChange={(event) => setArsValue(event.target.value)}
+              onBlur={saveArs}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              disabled={saving !== null}
+              inputMode="decimal"
+              placeholder="0"
+              className={`h-9 w-full rounded-lg border bg-slate-950/[0.65] pl-7 pr-2 text-right text-xs font-bold text-slate-100 outline-none transition placeholder:text-slate-700 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-45 ${isManualArs ? "border-amber-400/[0.32] focus:border-amber-400/[0.60] focus:ring-amber-500/10" : "border-white/[0.10] focus:border-violet-400/[0.55] focus:ring-violet-500/10"}`}
+              title="Podés escribir un costo final directamente en pesos. Ese valor deja de depender del dólar global."
+            />
+          </div>
+          <span className={`mt-1 block text-[10px] ${isManualArs ? "text-amber-300/80" : "text-slate-700"}`}>
+            {isManualArs ? "ARS manual" : current?.costUsd ? "Calculado por USD" : "Cargar en ARS"}
+          </span>
+        </div>
+      </td>
+    </>
   );
 }
 
@@ -626,25 +685,13 @@ function PublicationRow({
         </span>
       </td>
       <td className="px-4 py-4 text-right text-slate-400">{integer.format(publication.soldQuantity)}</td>
-      <td className="px-4 py-4 text-right">
-        <QuickUsdCost
-          publication={publication}
-          sellerId={sellerId}
-          usdRate={usdRate}
-          current={cost}
-          onSave={onCostSave}
-        />
-      </td>
-      <td className="px-4 py-4 text-right">
-        {hasCost ? (
-          <div>
-            <span className="font-bold text-slate-100">{money.format(costArs)}</span>
-            {cost?.ivaNonRecoverable ? <small className="mt-1 block text-[10px] text-slate-600">+ {money.format(cost.ivaNonRecoverable)} IVA NR</small> : null}
-          </div>
-        ) : (
-          <span className="text-slate-700">—</span>
-        )}
-      </td>
+      <QuickCostInputs
+        publication={publication}
+        sellerId={sellerId}
+        usdRate={usdRate}
+        current={cost}
+        onSave={onCostSave}
+      />
       <td className="px-4 py-4 text-right">
         {hasCost ? (
           <span className={margin >= 20 ? "font-bold text-emerald-300" : margin >= 10 ? "font-bold text-amber-300" : "font-bold text-red-300"}>
@@ -689,26 +736,36 @@ function CostEditor({
   onSave: (record: PublicationCostRecord) => void;
   onDelete: () => void;
 }) {
+  const initialManualArs = Boolean(current && !current.costUsd && Number(current.cost || 0) > 0);
+  const [costMode, setCostMode] = useState<"usd" | "ars">(initialManualArs ? "ars" : "usd");
   const [costUsd, setCostUsd] = useState(current?.costUsd ? String(current.costUsd) : "");
+  const [costArs, setCostArs] = useState(currentCostArs(current, usdRate) > 0 ? String(Math.round(currentCostArs(current, usdRate))) : "");
   const [supplier, setSupplier] = useState(current?.supplier || "");
   const [ivaNonRecoverable, setIvaNonRecoverable] = useState(current?.ivaNonRecoverable ? String(current.ivaNonRecoverable) : "");
   const [notes, setNotes] = useState(current?.notes || "");
   const [error, setError] = useState("");
 
   const parsedCostUsd = parseArgentineNumber(costUsd);
-  const parsedCost = parsedCostUsd > 0 && usdRate > 0 ? parsedCostUsd * usdRate : 0;
+  const parsedCostArs = parseArgentineNumber(costArs);
+  const parsedCost = costMode === "ars"
+    ? parsedCostArs
+    : parsedCostUsd > 0 && usdRate > 0 ? parsedCostUsd * usdRate : 0;
   const parsedIva = parseArgentineNumber(ivaNonRecoverable);
   const previewMargin = publication.price > 0 && parsedCost > 0
     ? ((publication.price - parsedCost - parsedIva) / publication.price) * 100
     : null;
 
   async function submit() {
-    if (!usdRate) {
-      setError("Primero cargá la cotización USD/ARS en la parte superior de Publicaciones.");
+    if (costMode === "usd" && !usdRate) {
+      setError("Para usar costo USD, primero cargá la cotización USD/ARS en la parte superior de Publicaciones.");
       return;
     }
-    if (!Number.isFinite(parsedCostUsd) || parsedCostUsd <= 0) {
+    if (costMode === "usd" && (!Number.isFinite(parsedCostUsd) || parsedCostUsd <= 0)) {
       setError("Ingresá un costo en USD mayor a cero.");
+      return;
+    }
+    if (costMode === "ars" && (!Number.isFinite(parsedCostArs) || parsedCostArs <= 0)) {
+      setError("Ingresá un costo en pesos mayor a cero.");
       return;
     }
     if (!Number.isFinite(parsedIva) || parsedIva < 0) {
@@ -722,7 +779,9 @@ function CostEditor({
         itemId: publication.id,
         title: publication.title,
         sku: publication.sellerSku,
-        costUsd: parsedCostUsd,
+        costUsd: costMode === "usd" ? parsedCostUsd : 0,
+        costArs: costMode === "ars" ? parsedCostArs : undefined,
+        costMode,
         usdRate,
         supplier,
         ivaNonRecoverable: parsedIva,
@@ -762,10 +821,40 @@ function CostEditor({
               <CardDescription>Mercado Libre no conoce estos datos. FidiTools los asocia a la publicación.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Field label="Costo del producto (USD)" required>
-                <Input value={costUsd} onChange={(event) => setCostUsd(event.target.value)} inputMode="decimal" placeholder="Ej.: 161" />
-                <p className="mt-2 text-xs text-slate-600">Cotización actual: {usdRate ? money.format(usdRate).replace("ARS", "").trim() : "sin cargar"} por USD · Costo pesificado: {parsedCost > 0 ? money.format(parsedCost) : "—"}</p>
-              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Costo USD">
+                  <Input
+                    value={costUsd}
+                    onChange={(event) => {
+                      setCostUsd(event.target.value);
+                      setCostMode("usd");
+                      const parsed = parseArgentineNumber(event.target.value);
+                      if (parsed > 0 && usdRate > 0) setCostArs(String(Math.round(parsed * usdRate)));
+                    }}
+                    inputMode="decimal"
+                    placeholder="Ej.: 161"
+                  />
+                  <p className="mt-2 text-xs text-slate-600">Al editar USD, el costo vuelve a seguir la cotización global.</p>
+                </Field>
+
+                <Field label="Costo ARS">
+                  <Input
+                    value={costArs}
+                    onChange={(event) => {
+                      setCostArs(event.target.value);
+                      setCostMode("ars");
+                    }}
+                    inputMode="decimal"
+                    placeholder="Ej.: 252000"
+                  />
+                  <p className="mt-2 text-xs text-slate-600">Al editar pesos, queda como costo manual y no cambia con el dólar.</p>
+                </Field>
+              </div>
+
+              <div className={`rounded-xl border p-3 text-xs ${costMode === "ars" ? "border-amber-400/[0.16] bg-amber-500/[0.06] text-amber-100" : "border-cyan-400/[0.14] bg-cyan-500/[0.05] text-cyan-100"}`}>
+                <strong>{costMode === "ars" ? "Modo ARS manual" : "Modo USD convertido"}</strong> · Costo usado por FidiTools: {parsedCost > 0 ? money.format(parsedCost) : "—"}
+                {costMode === "usd" ? ` · USD/ARS ${usdRate ? integer.format(usdRate) : "sin cargar"}` : " · No depende de la cotización global"}
+              </div>
 
               <Field label="Proveedor">
                 <Input value={supplier} onChange={(event) => setSupplier(event.target.value)} placeholder="Ej.: MacPower" />

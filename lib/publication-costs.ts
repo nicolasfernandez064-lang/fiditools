@@ -124,6 +124,8 @@ export async function savePublicationCostRemote({
   title,
   sku,
   costUsd,
+  costArs,
+  costMode = "usd",
   usdRate,
   supplier,
   ivaNonRecoverable,
@@ -133,7 +135,9 @@ export async function savePublicationCostRemote({
   itemId: string;
   title: string;
   sku?: string | null;
-  costUsd: number;
+  costUsd?: number;
+  costArs?: number;
+  costMode?: "usd" | "ars";
   usdRate: number;
   supplier: string;
   ivaNonRecoverable: number;
@@ -145,7 +149,9 @@ export async function savePublicationCostRemote({
       itemId,
       title,
       sku,
-      costUsd,
+      costUsd: Number(costUsd || 0),
+      costArs: Number(costArs || 0),
+      costMode,
       usdRate,
       supplier,
       ivaNonRecoverable,

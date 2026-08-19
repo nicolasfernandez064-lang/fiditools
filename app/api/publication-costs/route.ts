@@ -10,7 +10,9 @@ type SaveCostPayload = {
   itemId: string;
   title: string;
   sku?: string | null;
-  costUsd: number;
+  costUsd?: number;
+  costArs?: number;
+  costMode?: "usd" | "ars";
   usdRate: number;
   supplier?: string;
   ivaNonRecoverable?: number;
@@ -162,16 +164,25 @@ export async function POST(request: NextRequest) {
     if (payload.action === "save-cost") {
       const itemId = String(payload.itemId || "").trim();
       const title = String(payload.title || "").trim() || "Publicación Mercado Libre";
-      const costUsd = numberValue(payload.costUsd);
+      const costMode = payload.costMode === "ars" ? "ars" : "usd";
       const usdRate = numberValue(payload.usdRate);
-      const costArs = costUsd * usdRate;
+      const inputCostUsd = numberValue(payload.costUsd);
+      const inputCostArs = numberValue(payload.costArs);
+      const costUsd = costMode === "usd" ? inputCostUsd : 0;
+      const costArs = costMode === "ars" ? inputCostArs : inputCostUsd * usdRate;
       const ivaNr = Math.max(0, numberValue(payload.ivaNonRecoverable));
       const supplier = String(payload.supplier || "").trim();
       const notes = String(payload.notes || "").trim();
       const sku = payload.sku ? String(payload.sku).trim() : null;
 
-      if (!itemId || costUsd <= 0 || usdRate <= 0) {
-        return NextResponse.json({ error: "Publicación, costo USD y cotización son obligatorios." }, { status: 400 });
+      if (!itemId) {
+        return NextResponse.json({ error: "Falta la publicación." }, { status: 400 });
+      }
+      if (costMode === "usd" && (costUsd <= 0 || usdRate <= 0)) {
+        return NextResponse.json({ error: "Para usar costo USD, cargá un costo mayor a cero y una cotización válida." }, { status: 400 });
+      }
+      if (costMode === "ars" && costArs <= 0) {
+        return NextResponse.json({ error: "El costo ARS debe ser mayor a cero." }, { status: 400 });
       }
 
       const existing = (await sql`
